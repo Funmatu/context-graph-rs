@@ -1,16 +1,16 @@
 [package]
-name = "nx-compute-rs"
+name = "context-graph-rs"
 version = "0.1.0"
-edition = "2021"
-authors = ["R&D Researcher <your.email@example.com>"]
+edition = "2026"
+authors = ["R&D Researcher <funmatu@gmail.com>"]
 description = "A dual-runtime computation core for WebAssembly and Python, powered by Rust."
 
 [lib]
-name = "nx_compute_rs"
-crate-type = ["cdylib"]
+name = "context_graph_rs"
+crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["wasm"]
+default = ["console_error_panic_hook"]
 wasm = ["dep:wasm-bindgen"]
 python = ["dep:pyo3"]
 
@@ -25,6 +25,9 @@ wasm-bindgen = { version = "0.2", optional = true }
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
 
 rayon = "1.10"
+serde-wasm-bindgen = "0.6"
+getrandom = { version = "0.2", features = ["js"] }
+console_error_panic_hook = { version = "0.1.6", optional = true }
 
 [profile.release]
 lto = true

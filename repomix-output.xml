@@ -1,3 +1,472 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    deploy.yml
+src/
+  lib.rs
+www/
+  index.html
+  index.js
+.gitignore
+Cargo.toml
+LICENSE
+pyproject.toml
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".github/workflows/deploy.yml">
+name: Deploy to GitHub Pages
+
+on:
+  # mainブランチにpushされたら実行
+  push:
+    branches: ["main"]
+  # ブラウザから手動で実行したい時用
+  workflow_dispatch:
+
+permissions:
+  contents: write # gh-pagesブランチへの書き込み権限
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Rust環境のセットアップ (キャッシュも効く現代的なAction)
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # wasm-packのインストール
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      # ビルド実行 (Releaseモードで最適化)
+      - name: Build WASM
+        # ハイブリッド構成なので、Web用フラグ(--features wasm)を明示的にONにする
+        run: wasm-pack build --target web --out-dir www/pkg --no-default-features --features wasm
+      
+      # CIサーバー上でのみ ルートと、pkg内部のgitignoreの両方を抹殺する。
+      # これにより、ユーザーのローカル環境は汚さずに、生成された pkg フォルダを強制的に認識させる。
+      - name: Remove .gitignore to allow deploying pkg
+        run: |
+          rm -f .gitignore
+          rm -f www/pkg/.gitignore
+      
+      # Jekyll処理を無効化するファイルを作成
+      - name: Create .nojekyll
+        run: touch www/.nojekyll
+
+      # GitHub Pagesへのデプロイ
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./www # このフォルダの中身を公開する
+          force_orphan: true # 履歴を溜め込まず、常に最新版だけで上書きする（軽量化）
+
+# ======================================================================================
+#  [Reference] Python CI Job
+#  将来的にPythonモジュールの自動テストが必要になった場合、以下のコメントを解除してjobsに追加してください。
+#  (ローカルのUV環境で十分な場合は不要です)
+# ======================================================================================
+#   test-python:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: '3.10'
+#
+#       # Python側でもRustコンパイラは必要
+#       - name: Install Rust
+#         uses: dtolnay/rust-toolchain@stable
+#
+#       - name: Install Maturin
+#         run: pip install maturin
+#
+#       - name: Build and Test Python Module
+#         # Releaseビルドでテストする場合、--release を追加してください
+#         run: |
+#           maturin develop --features python
+#           python -c "import context_graph_rs; print(f'Test Result: {context_graph_rs.compute_metrics(1000, 1.0)}')"
+</file>
+
+<file path="src/lib.rs">
+use std::collections::HashMap;
+use wasm_bindgen::prelude::*;
+use serde::{Serialize, Deserialize};
+
+// --- Graph Definitions (Static Configuration) ---
+// 将来的にはJSON読み込み等で動的にできるが、まずはV6の定義をハードコードして再現性を担保する
+
+#[derive(Clone, Copy, PartialEq)]
+enum NodeType {
+    Sensor,
+    Feature,
+    State,
+}
+
+struct NodeDef {
+    id: &'static str,
+    #[allow(dead_code)] // 将来的に使う
+    label: &'static str,
+    node_type: NodeType,
+}
+
+struct EdgeDef {
+    source: &'static str,
+    target: &'static str,
+    weight: f32,
+}
+
+const NODES: &[NodeDef] = &[
+    // Sensors
+    NodeDef { id: "IN_VEL", label: "Velocity", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_REL_MOV", label: "Rel. Motion", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_FIST", label: "Fist", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_PINCH", label: "Pinch", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_OPEN", label: "Open Hand", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_SCISSORS", label: "Scissors Pose", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_HANDS_PROX", label: "Hands Touch", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_OCCLUSION", label: "Face Lost+Prox", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_THUMB_UP", label: "Thumb UP", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_THUMB_DOWN", label: "Thumb DOWN", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_EYES_ACT", label: "Cover Eyes", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_EARS_ACT", label: "Cover Ears", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_MOUTH_GUARD", label: "Cover Mouth", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_SMILE", label: "Smile", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_MOUTH", label: "Mouth Open", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_FACE_PROX", label: "Hand-Face Prox", node_type: NodeType::Sensor },
+
+    // Features
+    NodeDef { id: "FT_ACTIVE", label: "High Kinetic", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HOLDING", label: "Holding", node_type: NodeType::Feature },
+    NodeDef { id: "FT_FRICTION", label: "Friction", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HIDING", label: "Concealment", node_type: NodeType::Feature },
+    NodeDef { id: "FT_RPS_ROCK", label: "Pose: ROCK", node_type: NodeType::Feature },
+    NodeDef { id: "FT_RPS_SCI", label: "Pose: SCISSORS", node_type: NodeType::Feature },
+    NodeDef { id: "FT_RPS_PAP", label: "Pose: PAPER", node_type: NodeType::Feature },
+    NodeDef { id: "FT_APPROVAL", label: "Semantics: YES", node_type: NodeType::Feature },
+    NodeDef { id: "FT_DISAPPROVAL", label: "Semantics: NO", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HIDDEN_SENSE", label: "Blocking Senses", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HAPPY", label: "Emo: Happy", node_type: NodeType::Feature },
+    NodeDef { id: "FT_SHOCK", label: "Emo: Shock", node_type: NodeType::Feature },
+
+    // States
+    NodeDef { id: "ST_IDLE", label: "IDLE", node_type: NodeType::State },
+    NodeDef { id: "ST_GRASP", label: "ACTION: GRASP", node_type: NodeType::State },
+    NodeDef { id: "ST_DRAG", label: "ACTION: DRAG", node_type: NodeType::State },
+    NodeDef { id: "ST_WASH", label: "ACTION: WASH", node_type: NodeType::State },
+    NodeDef { id: "ST_PEEKABOO", label: "CTX: HIDDEN", node_type: NodeType::State },
+    NodeDef { id: "ST_ROCK", label: "GAME: ROCK", node_type: NodeType::State },
+    NodeDef { id: "ST_SCISSORS", label: "GAME: SCISSORS", node_type: NodeType::State },
+    NodeDef { id: "ST_PAPER", label: "GAME: PAPER", node_type: NodeType::State },
+    NodeDef { id: "ST_YES", label: "CTX: YES / OK", node_type: NodeType::State },
+    NodeDef { id: "ST_NO", label: "CTX: NO / BAD", node_type: NodeType::State },
+    NodeDef { id: "ST_MIZARU", label: "🙈 MIZARU", node_type: NodeType::State },
+    NodeDef { id: "ST_KIKAZARU", label: "🙉 KIKAZARU", node_type: NodeType::State },
+    NodeDef { id: "ST_IWAZARU", label: "🙊 IWAZARU", node_type: NodeType::State },
+    NodeDef { id: "ST_SMILE", label: "FACE: SMILE", node_type: NodeType::State },
+    NodeDef { id: "ST_SURPRISE", label: "FACE: SURPRISE", node_type: NodeType::State },
+];
+
+const EDGES: &[EdgeDef] = &[
+    // V5 Physical
+    EdgeDef { source: "IN_VEL", target: "FT_ACTIVE", weight: 0.9 },
+    EdgeDef { source: "IN_FIST", target: "FT_HOLDING", weight: 0.9 },
+    EdgeDef { source: "IN_PINCH", target: "FT_HOLDING", weight: 0.8 },
+    EdgeDef { source: "IN_HANDS_PROX", target: "FT_FRICTION", weight: 0.7 },
+    EdgeDef { source: "IN_REL_MOV", target: "FT_FRICTION", weight: 0.9 },
+    EdgeDef { source: "IN_OCCLUSION", target: "FT_HIDING", weight: 1.0 },
+    
+    EdgeDef { source: "FT_HOLDING", target: "ST_GRASP", weight: 1.0 },
+    EdgeDef { source: "FT_ACTIVE", target: "ST_GRASP", weight: -0.3 },
+    EdgeDef { source: "FT_HOLDING", target: "ST_DRAG", weight: 0.8 },
+    EdgeDef { source: "FT_ACTIVE", target: "ST_DRAG", weight: 0.9 },
+    EdgeDef { source: "FT_FRICTION", target: "ST_WASH", weight: 1.2 },
+    EdgeDef { source: "FT_HIDING", target: "ST_PEEKABOO", weight: 1.2 },
+
+    // V4 Semantic
+    EdgeDef { source: "IN_FIST", target: "FT_RPS_ROCK", weight: 0.8 },
+    EdgeDef { source: "IN_SCISSORS", target: "FT_RPS_SCI", weight: 0.9 },
+    EdgeDef { source: "IN_OPEN", target: "FT_RPS_PAP", weight: 0.9 },
+    EdgeDef { source: "FT_RPS_ROCK", target: "ST_ROCK", weight: 0.9 },
+    EdgeDef { source: "FT_RPS_SCI", target: "ST_SCISSORS", weight: 0.9 },
+    EdgeDef { source: "FT_RPS_PAP", target: "ST_PAPER", weight: 0.9 },
+
+    EdgeDef { source: "IN_THUMB_UP", target: "FT_APPROVAL", weight: 1.0 },
+    EdgeDef { source: "IN_THUMB_DOWN", target: "FT_DISAPPROVAL", weight: 1.0 },
+    EdgeDef { source: "IN_THUMB_UP", target: "FT_RPS_ROCK", weight: -0.5 },
+    EdgeDef { source: "IN_THUMB_DOWN", target: "FT_RPS_ROCK", weight: -0.5 },
+    EdgeDef { source: "FT_APPROVAL", target: "ST_YES", weight: 1.0 },
+    EdgeDef { source: "FT_DISAPPROVAL", target: "ST_NO", weight: 1.0 },
+
+    EdgeDef { source: "IN_EYES_ACT", target: "FT_HIDDEN_SENSE", weight: 0.8 },
+    EdgeDef { source: "IN_EYES_ACT", target: "ST_MIZARU", weight: 1.0 },
+    EdgeDef { source: "IN_HANDS_PROX", target: "ST_MIZARU", weight: 0.5 },
+    EdgeDef { source: "IN_EARS_ACT", target: "FT_HIDDEN_SENSE", weight: 0.8 },
+    EdgeDef { source: "IN_EARS_ACT", target: "ST_KIKAZARU", weight: 1.0 },
+    EdgeDef { source: "IN_MOUTH_GUARD", target: "FT_HIDDEN_SENSE", weight: 0.8 },
+    EdgeDef { source: "IN_MOUTH_GUARD", target: "ST_IWAZARU", weight: 1.0 },
+    EdgeDef { source: "IN_HANDS_PROX", target: "ST_IWAZARU", weight: 0.8 },
+
+    EdgeDef { source: "IN_SMILE", target: "FT_HAPPY", weight: 0.9 },
+    EdgeDef { source: "IN_MOUTH", target: "FT_SHOCK", weight: 0.6 },
+    EdgeDef { source: "IN_FACE_PROX", target: "FT_SHOCK", weight: 0.5 },
+    EdgeDef { source: "FT_HAPPY", target: "ST_SMILE", weight: 0.9 },
+    EdgeDef { source: "FT_SHOCK", target: "ST_SURPRISE", weight: 0.9 },
+
+    // Inhibition
+    EdgeDef { source: "FT_ACTIVE", target: "ST_IDLE", weight: -0.6 },
+    EdgeDef { source: "ST_ROCK", target: "ST_SCISSORS", weight: -0.8 },
+    EdgeDef { source: "ST_ROCK", target: "ST_PAPER", weight: -0.8 },
+    EdgeDef { source: "ST_SCISSORS", target: "ST_PAPER", weight: -0.8 },
+    EdgeDef { source: "ST_YES", target: "ST_NO", weight: -2.0 },
+    EdgeDef { source: "ST_NO", target: "ST_YES", weight: -2.0 },
+    EdgeDef { source: "ST_MIZARU", target: "ST_KIKAZARU", weight: -1.0 },
+    EdgeDef { source: "ST_MIZARU", target: "ST_IWAZARU", weight: -1.0 },
+    EdgeDef { source: "ST_KIKAZARU", target: "ST_IWAZARU", weight: -1.0 },
+    EdgeDef { source: "ST_GRASP", target: "ST_WASH", weight: -0.8 },
+    EdgeDef { source: "ST_WASH", target: "ST_GRASP", weight: -0.8 },
+    EdgeDef { source: "ST_DRAG", target: "ST_WASH", weight: -0.8 },
+];
+
+// --- Engine ---
+
+#[wasm_bindgen]
+pub struct ContextEngine {
+    nodes: HashMap<String, f32>,
+    node_types: HashMap<String, NodeType>,
+    // エッジの検索を高速化するため、TargetをキーにしたMapを持つ
+    edges_by_target: HashMap<String, Vec<(&'static str, f32)>>, 
+    
+    decay: f32,
+    stiffness: f32,
+}
+
+#[wasm_bindgen]
+impl ContextEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        let mut nodes = HashMap::new();
+        let mut node_types = HashMap::new();
+        let mut edges_by_target: HashMap<String, Vec<(&str, f32)>> = HashMap::new();
+
+        for n in NODES {
+            nodes.insert(n.id.to_string(), 0.0);
+            node_types.insert(n.id.to_string(), n.node_type);
+        }
+
+        for e in EDGES {
+            edges_by_target
+                .entry(e.target.to_string())
+                .or_default()
+                .push((e.source, e.weight));
+        }
+
+        Self {
+            nodes,
+            node_types,
+            edges_by_target,
+            decay: 0.25,
+            stiffness: 0.6,
+        }
+    }
+
+    fn sigmoid(&self, x: f32) -> f32 {
+        1.0 / (1.0 + (-6.0 * (x - 0.5)).exp())
+    }
+
+    // JSオブジェクト { "IN_VEL": 0.5, ... } を受け取る
+    pub fn inject(&mut self, inputs: JsValue) {
+        let input_map: HashMap<String, f32> = serde_wasm_bindgen::from_value(inputs).unwrap_or_default();
+        
+        for (id, val) in input_map {
+            if let Some(current) = self.nodes.get_mut(&id) {
+                // V5 Logic: Slight blend
+                *current = (*current * 0.3) + (val * 0.7);
+            }
+        }
+    }
+
+    pub fn step(&mut self) {
+        let mut next_state = self.nodes.clone();
+
+        for (node_id, current_val) in &self.nodes {
+            let mut input_sum = 0.0;
+
+            // Gather energy from incoming edges
+            if let Some(incoming) = self.edges_by_target.get(node_id) {
+                for (source_id, weight) in incoming {
+                    if let Some(source_val) = self.nodes.get(*source_id) {
+                        input_sum += source_val * weight;
+                    }
+                }
+            }
+
+            let energy = input_sum * self.stiffness;
+            let retained = current_val * (1.0 - self.decay);
+            let node_type = self.node_types.get(node_id).unwrap();
+
+            match node_type {
+                NodeType::Sensor => {
+                    // Sensors just retain/decay (values are injected externally)
+                    next_state.insert(node_id.clone(), (retained).max(0.0));
+                },
+                _ => {
+                    let raw_activ = retained + energy;
+                    let new_val = if raw_activ > 0.1 {
+                        self.sigmoid(raw_activ)
+                    } else {
+                        raw_activ
+                    };
+                    // Clamp [0, 1]
+                    next_state.insert(node_id.clone(), new_val.max(0.0).min(1.0));
+                }
+            }
+        }
+
+        self.nodes = next_state;
+    }
+
+    pub fn get_activations(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.nodes).unwrap()
+    }
+
+    // Stateタイプのノードのみをソートして返す（上位のコンテキスト判定用）
+    #[derive(Serialize)]
+    struct RankedState {
+        id: String,
+        label: String, // Rust側ではLabelを持ってないのでIDで代用か、Map引くか。ここでは簡易化
+        value: f32,
+    }
+
+    pub fn get_ranked_states(&self) -> JsValue {
+        let mut states = Vec::new();
+        for (id, val) in &self.nodes {
+            if let Some(NodeType::State) = self.node_types.get(id) {
+                // Label検索（本来はHashMapにするべきだが、この規模ならリニアスキャンでも一瞬）
+                let label = NODES.iter().find(|n| n.id == id).map(|n| n.label).unwrap_or(id);
+                
+                states.push(serde_json::json!({
+                    "id": id,
+                    "label": label,
+                    "value": val
+                }));
+            }
+        }
+        
+        // Sort descending
+        states.sort_by(|a, b| {
+            let val_a = a["value"].as_f64().unwrap();
+            let val_b = b["value"].as_f64().unwrap();
+            val_b.partial_cmp(&val_a).unwrap()
+        });
+
+        serde_wasm_bindgen::to_value(&states).unwrap()
+    }
+}
+</file>
+
+<file path="www/index.html">
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CONTEXTGRAPH.V6.0 - RUST CORE</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom": "https://esm.sh/react-dom@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "recharts": "https://esm.sh/recharts@2.12.0?external=react,react-dom",
+            "lucide-react": "https://esm.sh/lucide-react@0.330.0?external=react,react-dom"
+        }
+    }
+    </script>
+
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
+
+    <style>
+        body { margin: 0; background-color: #020617; color: #f8fafc; font-family: 'Courier New', monospace; overflow: hidden; }
+        .cy-container { height: 100%; width: 100%; position: absolute; top: 0; left: 0; }
+        .recharts-wrapper { width: 100% !important; height: 100% !important; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module" src="./index.js"></script>
+</body>
+</html>
+</file>
+
+<file path="www/index.js">
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { LineChart, Line, Tooltip, ResponsiveContainer, CartesianGrid, YAxis } from 'recharts';
@@ -539,3 +1008,236 @@ const LogicGraphApp = () => {
 
 const root = createRoot(document.getElementById('root'));
 root.render(<LogicGraphApp />);
+</file>
+
+<file path=".gitignore">
+# ========================
+# Rust / Cargo
+# ========================
+# ビルド生成物（巨大なので絶対にコミットしない）
+/target/
+
+# バックアップファイルなど
+**/*.rs.bk
+
+# Cargo.lock はライブラリ開発なら無視することもありますが、
+# 今回はアプリケーション/PoCとしての再現性を重視するためコミットします。
+# (無視したい場合は下の行の # を外してください)
+# Cargo.lock
+
+# ========================
+# Python
+# ========================
+# バイトコード
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C拡張モジュール (MaturinでビルドされたRustライブラリ本体)
+*.so
+*.pyd
+*.dylib
+
+# 配布用ビルドアーティファクト
+dist/
+build/
+*.egg-info/
+
+# 仮想環境 (uv venv)
+.venv/
+venv/
+env/
+ENV/
+
+# テスト・型チェックキャッシュ
+.pytest_cache/
+.mypy_cache/
+
+# ========================
+# WebAssembly / Frontend
+# ========================
+# wasm-pack によって自動生成されるファイル群
+# (ソースコードからいつでも再生成できるためコミット不要)
+www/pkg/
+
+# npm を使うようになった場合の依存ライブラリ
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ========================
+# OS / IDE / Editors
+# ========================
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# VS Code
+.vscode/
+
+# IntelliJ / PyCharm
+.idea/
+
+# Vim / Emacs
+*~
+*.swp
+</file>
+
+<file path="Cargo.toml">
+[package]
+name = "context-graph-rs"
+version = "0.1.0"
+edition = "2026"
+authors = ["R&D Researcher <funmatu@gmail.com>"]
+description = "A dual-runtime computation core for WebAssembly and Python, powered by Rust."
+
+[lib]
+name = "context_graph_rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+wasm = ["dep:wasm-bindgen"]
+python = ["dep:pyo3"]
+
+[dependencies]
+# Common dependencies (Math, etc.)
+serde = { version = "1.0", features = ["derive"] }
+
+# Feature: WebAssembly
+wasm-bindgen = { version = "0.2", optional = true }
+
+# Feature: Python
+pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
+
+rayon = "1.10"
+serde-wasm-bindgen = "0.6"
+getrandom = { version = "0.2", features = ["js"] }
+console_error_panic_hook = { version = "0.1.6", optional = true }
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+</file>
+
+<file path="LICENSE">
+MIT License
+
+Copyright (c) 2025 Funmatu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</file>
+
+<file path="pyproject.toml">
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "context_graph_rs"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+dynamic = ["version"]
+</file>
+
+<file path="README.md">
+# ContextGraph-RS: Spreading Activation Engine in Rust
+
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+![Rust](https://img.shields.io/badge/core-Rust-orange)
+![WASM](https://img.shields.io/badge/target-WASM-blue)
+
+**ContextGraph-RS** is a high-performance, modular core library for Context Awareness logic based on **Spreading Activation Theory (SAT)**. 
+
+This repository is a port of the "Project V6.0" JavaScript prototype into a robust Rust codebase, enabling:
+1.  **Portability**: The same logic (`ContextEngine`) runs in Browsers (WASM), Robots (ROS2/Python), and Servers.
+2.  **Scalability**: Capable of handling thousands of nodes/edges with zero garbage collection overhead.
+3.  **Type Safety**: Rigid state management preventing runtime errors in complex graph interactions.
+
+## 1. Architecture
+
+The system follows a strict separation of concerns:
+
+* **Core (Rust)**:
+    * `ContextEngine`: The "Brain". Holds the graph state (nodes, weights) and executes the sigmoid propagation logic.
+    * **Input**: `HashMap<String, f32>` (Normalized Sensor Data)
+    * **Output**: `HashMap<String, f32>` (Activation Levels)
+    * **Logic**: Energy Injection -> Spreading (Stiffness) -> Decay -> Sigmoid Activation.
+
+* **Frontend (JavaScript/React)**:
+    * **Sensation**: MediaPipe (Hands/Face/Holistic) extracts raw physical features.
+    * **Preprocessing**: Simple Moving Average (SMA) buffers sensor data.
+    * **Visualization**: Cytoscape.js renders the graph state returned by WASM.
+
+```mermaid
+graph LR
+    Video[Camera Input] --> MP[MediaPipe JS]
+    MP --> Buffer[JS Buffer]
+    Buffer --"inject(Object)"--> WASM[Rust Core]
+    WASM --"step()"--> WASM
+    WASM --"get_activations()"--> UI[React UI]
+
+```
+
+## 2. Usage
+
+### Development
+
+```bash
+# 1. Build WASM package
+wasm-pack build --target web --out-dir www/pkg
+
+# 2. Serve Locally
+cd www
+python3 -m http.server 8000
+
+```
+
+### Production / Library Use
+
+The core logic in `src/lib.rs` is designed to be published as a crate or Python module (`maturin`).
+
+```rust
+// Rust Example
+let mut engine = ContextEngine::new();
+engine.inject(sensor_data); // {"IN_VEL": 0.8, ...}
+engine.step();
+let results = engine.get_ranked_states();
+
+```
+
+## 3. Future Roadmap
+
+* **Dynamic Graph Loading**: Load graph definitions (JSON/YAML) at runtime instead of hardcoding.
+* **Hebbian Learning**: Implement weight adjustment logic (`fire together, wire together`) in Rust.
+* **Python Bindings**: Add `PyO3` support for direct integration with ROS2 nodes.
+
+---
+</file>
+
+</files>
