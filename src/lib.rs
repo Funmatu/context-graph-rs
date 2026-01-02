@@ -1,8 +1,13 @@
 use std::collections::HashMap;
-use wasm_bindgen::prelude::*;
 use serde::Serialize;
 
-// --- Graph Definitions (Static Configuration) ---
+// WASMビルド時のみ wasm_bindgen をインポート
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::*;
+
+// ============================================================================
+//  GRAPH DEFINITIONS (STATIC CONFIGURATION)
+// ============================================================================
 
 #[derive(Clone, Copy, PartialEq)]
 enum NodeType {
@@ -136,17 +141,20 @@ const EDGES: &[EdgeDef] = &[
     EdgeDef { source: "ST_DRAG", target: "ST_WASH", weight: -0.8 },
 ];
 
-// --- Engine ---
+// ============================================================================
+//  CORE ENGINE STRUCTS (Shared)
+// ============================================================================
 
 // Helper struct for sorting states (moved outside impl)
-#[derive(Serialize)]
-struct RankedState {
-    id: String,
-    label: String,
-    value: f32,
+#[derive(Serialize, Clone)]
+pub struct RankedState {
+    pub id: String,
+    pub label: String,
+    pub value: f32,
 }
 
-#[wasm_bindgen]
+// WASMビルド時のみ #[wasm_bindgen] を付与する
+#[cfg_attr(feature = "wasm", wasm_bindgen)]
 pub struct ContextEngine {
     nodes: HashMap<String, f32>,
     node_types: HashMap<String, NodeType>,
@@ -157,13 +165,13 @@ pub struct ContextEngine {
     stiffness: f32,
 }
 
-#[wasm_bindgen]
-impl ContextEngine {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        #[cfg(feature = "console_error_panic_hook")]
-        console_error_panic_hook::set_once();
+// ============================================================================
+//  SHARED LOGIC (Pure Rust - No WASM dependency)
+// ============================================================================
 
+impl ContextEngine {
+    /// 内部使用・Pythonバインディング用のコンストラクタ
+    pub fn new_internal() -> Self {
         let mut nodes = HashMap::new();
         let mut node_types = HashMap::new();
         let mut edges_by_target: HashMap<String, Vec<(&str, f32)>> = HashMap::new();
@@ -193,10 +201,8 @@ impl ContextEngine {
         1.0 / (1.0 + (-6.0 * (x - 0.5)).exp())
     }
 
-    // JSオブジェクト { "IN_VEL": 0.5, ... } を受け取る
-    pub fn inject(&mut self, inputs: JsValue) {
-        let input_map: HashMap<String, f32> = serde_wasm_bindgen::from_value(inputs).unwrap_or_default();
-        
+    /// 純粋なHashMapを受け取る注入メソッド（Python/Internal共用）
+    pub fn inject_core(&mut self, input_map: HashMap<String, f32>) {
         for (id, val) in input_map {
             if let Some(current) = self.nodes.get_mut(&id) {
                 // V5 Logic: Slight blend
@@ -205,7 +211,8 @@ impl ContextEngine {
         }
     }
 
-    pub fn step(&mut self) {
+    /// ステップ実行のコアロジック
+    pub fn step_core(&mut self) {
         let mut next_state = self.nodes.clone();
 
         for (node_id, current_val) in &self.nodes {
@@ -245,12 +252,8 @@ impl ContextEngine {
         self.nodes = next_state;
     }
 
-    pub fn get_activations(&self) -> JsValue {
-        serde_wasm_bindgen::to_value(&self.nodes).unwrap()
-    }
-
-    // Stateタイプのノードのみをソートして返す（上位のコンテキスト判定用）
-    pub fn get_ranked_states(&self) -> JsValue {
+    /// ランキング計算のコアロジック
+    pub fn get_ranked_states_core(&self) -> Vec<RankedState> {
         let mut states = Vec::new();
         for (id, val) in &self.nodes {
             if let Some(NodeType::State) = self.node_types.get(id) {
@@ -270,6 +273,96 @@ impl ContextEngine {
             b.value.partial_cmp(&a.value).unwrap()
         });
 
+        states
+    }
+}
+
+// ============================================================================
+//  WASM INTERFACE (Conditional Compilation)
+// ============================================================================
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+impl ContextEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        #[cfg(feature = "console_error_panic_hook")]
+        console_error_panic_hook::set_once();
+        Self::new_internal()
+    }
+
+    pub fn inject(&mut self, inputs: JsValue) {
+        let input_map: HashMap<String, f32> = serde_wasm_bindgen::from_value(inputs).unwrap_or_default();
+        self.inject_core(input_map);
+    }
+
+    pub fn step(&mut self) {
+        self.step_core();
+    }
+
+    pub fn get_activations(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.nodes).unwrap()
+    }
+
+    pub fn get_ranked_states(&self) -> JsValue {
+        let states = self.get_ranked_states_core();
         serde_wasm_bindgen::to_value(&states).unwrap()
+    }
+}
+
+// ============================================================================
+//  PYTHON INTERFACE (PyO3)
+// ============================================================================
+
+#[cfg(feature = "python")]
+pub mod python_interface {
+    // PyO3マクロが生成するコードに関する警告を抑制
+    #![allow(non_local_definitions)]
+    
+    use super::*;
+    use pyo3::prelude::*;
+
+    #[pyclass(name = "ContextEngine")]
+    pub struct PyContextEngine {
+        inner: ContextEngine,
+    }
+
+    #[pymethods]
+    impl PyContextEngine {
+        #[new]
+        fn new() -> Self {
+            PyContextEngine { inner: ContextEngine::new_internal() }
+        }
+
+        fn inject(&mut self, inputs: HashMap<String, f32>) {
+            self.inner.inject_core(inputs);
+        }
+
+        fn step(&mut self) {
+            self.inner.step_core();
+        }
+
+        fn get_activations(&self) -> HashMap<String, f32> {
+            self.inner.nodes.clone()
+        }
+
+        fn get_ranked_states(&self) -> Vec<HashMap<String, PyObject>> {
+            let states = self.inner.get_ranked_states_core();
+            Python::with_gil(|py| {
+                states.into_iter().map(|s| {
+                    let mut map = HashMap::new();
+                    map.insert("id".to_string(), s.id.into_py(py));
+                    map.insert("label".to_string(), s.label.into_py(py));
+                    map.insert("value".to_string(), s.value.into_py(py));
+                    map
+                }).collect()
+            })
+        }
+    }
+
+    #[pymodule]
+    fn context_graph_rs(_py: Python, m: &PyModule) -> PyResult<()> {
+        m.add_class::<PyContextEngine>()?;
+        Ok(())
     }
 }

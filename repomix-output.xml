@@ -45,6 +45,8 @@ The content is organized as follows:
     deploy.yml
 src/
   lib.rs
+tests/
+  test_simulation.py
 www/
   index.html
   index.js
@@ -57,6 +59,202 @@ README.md
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="tests/test_simulation.py">
+import unittest
+import sys
+import os
+
+# テスト実行時にビルドされたモジュールをインポートできるようにする
+# maturin develop でインストール済みであれば不要だが、念のため
+try:
+    import context_graph_rs
+except ImportError:
+    print("Error: context_graph_rs module not found.")
+    print("Please run 'maturin develop --features python' first.")
+    sys.exit(1)
+
+
+class TestContextEngine(unittest.TestCase):
+    def setUp(self):
+        """テストごとにエンジンを初期化"""
+        self.engine = context_graph_rs.ContextEngine()
+        print("\n[Setup] Engine Initialized")
+
+    def test_initial_state(self):
+        """初期状態ですべてのノードが0（または低値）であることを確認"""
+        activations = self.engine.get_activations()
+        # 適当なノードをチェック
+        self.assertLess(activations.get("ST_IDLE", 0.0), 0.1)
+        self.assertLess(activations.get("ST_GRASP", 0.0), 0.1)
+        print("[Pass] Initial state check")
+
+    def test_grasp_logic(self):
+        """
+        ダミー入力: 強く握っている状態 (FIST=1.0)
+        期待される挙動: FT_HOLDING が上がり、ST_GRASP が活性化する
+        """
+        # 1. センサー入力 (Fistを検知)
+        sensors = {
+            "IN_FIST": 1.0,
+            "IN_VEL": 0.1,  # 少し動きがある
+            "IN_OPEN": 0.0,
+        }
+
+        print(f"[Input] Injecting sensors: {sensors}")
+
+        # 2. 数ステップ実行して拡散させる
+        for i in range(5):
+            self.engine.inject(sensors)
+            self.engine.step()
+
+            # 途中経過のログ
+            acts = self.engine.get_activations()
+            print(
+                f"  Step {i + 1}: FT_HOLDING={acts.get('FT_HOLDING'):.3f}, ST_GRASP={acts.get('ST_GRASP'):.3f}"
+            )
+
+        # 3. 検証
+        ranked = self.engine.get_ranked_states()
+        top_state = ranked[0]
+
+        print(
+            f"[Result] Top State: {top_state['label']} (Value: {top_state['value']:.3f})"
+        )
+
+        # 期待: ST_GRASP が上位に来ていること
+        # (ロジック上、IN_FIST -> FT_HOLDING -> ST_GRASP と伝播する)
+        self.assertEqual(top_state["id"], "ST_GRASP")
+        self.assertGreater(top_state["value"], 0.5)  # 0.5以上の確信度
+
+    def test_inhibition(self):
+        """
+        抑制のテスト:
+        ST_YES と ST_NO は相互抑制の関係にある。
+        ST_YES を活性化させると、ST_NO は下がりにくくなる（あるいは下がる）はず。
+        """
+        # YESを活性化させる入力 (Thumb Up)
+        sensors_yes = {"IN_THUMB_UP": 1.0}
+
+        print("[Input] Injecting Thumb Up (Expect YES)")
+        for _ in range(5):
+            self.engine.inject(sensors_yes)
+            self.engine.step()
+
+        acts_yes = self.engine.get_activations()
+        val_yes = acts_yes.get("ST_YES", 0.0)
+        val_no = acts_yes.get("ST_NO", 0.0)
+
+        print(f"  Result: YES={val_yes:.3f}, NO={val_no:.3f}")
+
+        self.assertGreater(val_yes, val_no)
+        self.assertGreater(val_yes, 0.5)
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path=".gitignore">
+# ========================
+# Rust / Cargo
+# ========================
+# ビルド生成物（巨大なので絶対にコミットしない）
+/target/
+
+# バックアップファイルなど
+**/*.rs.bk
+
+# Cargo.lock はライブラリ開発なら無視することもありますが、
+# 今回はアプリケーション/PoCとしての再現性を重視するためコミットします。
+# (無視したい場合は下の行の # を外してください)
+# Cargo.lock
+
+# ========================
+# Python
+# ========================
+# バイトコード
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C拡張モジュール (MaturinでビルドされたRustライブラリ本体)
+*.so
+*.pyd
+*.dylib
+
+# 配布用ビルドアーティファクト
+dist/
+build/
+*.egg-info/
+
+# 仮想環境 (uv venv)
+.venv/
+venv/
+env/
+ENV/
+
+# テスト・型チェックキャッシュ
+.pytest_cache/
+.mypy_cache/
+
+# ========================
+# WebAssembly / Frontend
+# ========================
+# wasm-pack によって自動生成されるファイル群
+# (ソースコードからいつでも再生成できるためコミット不要)
+www/pkg/
+
+# npm を使うようになった場合の依存ライブラリ
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ========================
+# OS / IDE / Editors
+# ========================
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# VS Code
+.vscode/
+
+# IntelliJ / PyCharm
+.idea/
+
+# Vim / Emacs
+*~
+*.swp
+</file>
+
+<file path="LICENSE">
+MIT License
+
+Copyright (c) 2025 Funmatu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</file>
 
 <file path=".github/workflows/deploy.yml">
 name: Deploy to GitHub Pages
@@ -139,283 +337,6 @@ jobs:
 #         run: |
 #           maturin develop --features python
 #           python -c "import context_graph_rs; print(f'Test Result: {context_graph_rs.compute_metrics(1000, 1.0)}')"
-</file>
-
-<file path="src/lib.rs">
-use std::collections::HashMap;
-use wasm_bindgen::prelude::*;
-use serde::{Serialize, Deserialize};
-
-// --- Graph Definitions (Static Configuration) ---
-// 将来的にはJSON読み込み等で動的にできるが、まずはV6の定義をハードコードして再現性を担保する
-
-#[derive(Clone, Copy, PartialEq)]
-enum NodeType {
-    Sensor,
-    Feature,
-    State,
-}
-
-struct NodeDef {
-    id: &'static str,
-    #[allow(dead_code)] // 将来的に使う
-    label: &'static str,
-    node_type: NodeType,
-}
-
-struct EdgeDef {
-    source: &'static str,
-    target: &'static str,
-    weight: f32,
-}
-
-const NODES: &[NodeDef] = &[
-    // Sensors
-    NodeDef { id: "IN_VEL", label: "Velocity", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_REL_MOV", label: "Rel. Motion", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_FIST", label: "Fist", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_PINCH", label: "Pinch", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_OPEN", label: "Open Hand", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_SCISSORS", label: "Scissors Pose", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_HANDS_PROX", label: "Hands Touch", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_OCCLUSION", label: "Face Lost+Prox", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_THUMB_UP", label: "Thumb UP", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_THUMB_DOWN", label: "Thumb DOWN", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_EYES_ACT", label: "Cover Eyes", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_EARS_ACT", label: "Cover Ears", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_MOUTH_GUARD", label: "Cover Mouth", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_SMILE", label: "Smile", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_MOUTH", label: "Mouth Open", node_type: NodeType::Sensor },
-    NodeDef { id: "IN_FACE_PROX", label: "Hand-Face Prox", node_type: NodeType::Sensor },
-
-    // Features
-    NodeDef { id: "FT_ACTIVE", label: "High Kinetic", node_type: NodeType::Feature },
-    NodeDef { id: "FT_HOLDING", label: "Holding", node_type: NodeType::Feature },
-    NodeDef { id: "FT_FRICTION", label: "Friction", node_type: NodeType::Feature },
-    NodeDef { id: "FT_HIDING", label: "Concealment", node_type: NodeType::Feature },
-    NodeDef { id: "FT_RPS_ROCK", label: "Pose: ROCK", node_type: NodeType::Feature },
-    NodeDef { id: "FT_RPS_SCI", label: "Pose: SCISSORS", node_type: NodeType::Feature },
-    NodeDef { id: "FT_RPS_PAP", label: "Pose: PAPER", node_type: NodeType::Feature },
-    NodeDef { id: "FT_APPROVAL", label: "Semantics: YES", node_type: NodeType::Feature },
-    NodeDef { id: "FT_DISAPPROVAL", label: "Semantics: NO", node_type: NodeType::Feature },
-    NodeDef { id: "FT_HIDDEN_SENSE", label: "Blocking Senses", node_type: NodeType::Feature },
-    NodeDef { id: "FT_HAPPY", label: "Emo: Happy", node_type: NodeType::Feature },
-    NodeDef { id: "FT_SHOCK", label: "Emo: Shock", node_type: NodeType::Feature },
-
-    // States
-    NodeDef { id: "ST_IDLE", label: "IDLE", node_type: NodeType::State },
-    NodeDef { id: "ST_GRASP", label: "ACTION: GRASP", node_type: NodeType::State },
-    NodeDef { id: "ST_DRAG", label: "ACTION: DRAG", node_type: NodeType::State },
-    NodeDef { id: "ST_WASH", label: "ACTION: WASH", node_type: NodeType::State },
-    NodeDef { id: "ST_PEEKABOO", label: "CTX: HIDDEN", node_type: NodeType::State },
-    NodeDef { id: "ST_ROCK", label: "GAME: ROCK", node_type: NodeType::State },
-    NodeDef { id: "ST_SCISSORS", label: "GAME: SCISSORS", node_type: NodeType::State },
-    NodeDef { id: "ST_PAPER", label: "GAME: PAPER", node_type: NodeType::State },
-    NodeDef { id: "ST_YES", label: "CTX: YES / OK", node_type: NodeType::State },
-    NodeDef { id: "ST_NO", label: "CTX: NO / BAD", node_type: NodeType::State },
-    NodeDef { id: "ST_MIZARU", label: "🙈 MIZARU", node_type: NodeType::State },
-    NodeDef { id: "ST_KIKAZARU", label: "🙉 KIKAZARU", node_type: NodeType::State },
-    NodeDef { id: "ST_IWAZARU", label: "🙊 IWAZARU", node_type: NodeType::State },
-    NodeDef { id: "ST_SMILE", label: "FACE: SMILE", node_type: NodeType::State },
-    NodeDef { id: "ST_SURPRISE", label: "FACE: SURPRISE", node_type: NodeType::State },
-];
-
-const EDGES: &[EdgeDef] = &[
-    // V5 Physical
-    EdgeDef { source: "IN_VEL", target: "FT_ACTIVE", weight: 0.9 },
-    EdgeDef { source: "IN_FIST", target: "FT_HOLDING", weight: 0.9 },
-    EdgeDef { source: "IN_PINCH", target: "FT_HOLDING", weight: 0.8 },
-    EdgeDef { source: "IN_HANDS_PROX", target: "FT_FRICTION", weight: 0.7 },
-    EdgeDef { source: "IN_REL_MOV", target: "FT_FRICTION", weight: 0.9 },
-    EdgeDef { source: "IN_OCCLUSION", target: "FT_HIDING", weight: 1.0 },
-    
-    EdgeDef { source: "FT_HOLDING", target: "ST_GRASP", weight: 1.0 },
-    EdgeDef { source: "FT_ACTIVE", target: "ST_GRASP", weight: -0.3 },
-    EdgeDef { source: "FT_HOLDING", target: "ST_DRAG", weight: 0.8 },
-    EdgeDef { source: "FT_ACTIVE", target: "ST_DRAG", weight: 0.9 },
-    EdgeDef { source: "FT_FRICTION", target: "ST_WASH", weight: 1.2 },
-    EdgeDef { source: "FT_HIDING", target: "ST_PEEKABOO", weight: 1.2 },
-
-    // V4 Semantic
-    EdgeDef { source: "IN_FIST", target: "FT_RPS_ROCK", weight: 0.8 },
-    EdgeDef { source: "IN_SCISSORS", target: "FT_RPS_SCI", weight: 0.9 },
-    EdgeDef { source: "IN_OPEN", target: "FT_RPS_PAP", weight: 0.9 },
-    EdgeDef { source: "FT_RPS_ROCK", target: "ST_ROCK", weight: 0.9 },
-    EdgeDef { source: "FT_RPS_SCI", target: "ST_SCISSORS", weight: 0.9 },
-    EdgeDef { source: "FT_RPS_PAP", target: "ST_PAPER", weight: 0.9 },
-
-    EdgeDef { source: "IN_THUMB_UP", target: "FT_APPROVAL", weight: 1.0 },
-    EdgeDef { source: "IN_THUMB_DOWN", target: "FT_DISAPPROVAL", weight: 1.0 },
-    EdgeDef { source: "IN_THUMB_UP", target: "FT_RPS_ROCK", weight: -0.5 },
-    EdgeDef { source: "IN_THUMB_DOWN", target: "FT_RPS_ROCK", weight: -0.5 },
-    EdgeDef { source: "FT_APPROVAL", target: "ST_YES", weight: 1.0 },
-    EdgeDef { source: "FT_DISAPPROVAL", target: "ST_NO", weight: 1.0 },
-
-    EdgeDef { source: "IN_EYES_ACT", target: "FT_HIDDEN_SENSE", weight: 0.8 },
-    EdgeDef { source: "IN_EYES_ACT", target: "ST_MIZARU", weight: 1.0 },
-    EdgeDef { source: "IN_HANDS_PROX", target: "ST_MIZARU", weight: 0.5 },
-    EdgeDef { source: "IN_EARS_ACT", target: "FT_HIDDEN_SENSE", weight: 0.8 },
-    EdgeDef { source: "IN_EARS_ACT", target: "ST_KIKAZARU", weight: 1.0 },
-    EdgeDef { source: "IN_MOUTH_GUARD", target: "FT_HIDDEN_SENSE", weight: 0.8 },
-    EdgeDef { source: "IN_MOUTH_GUARD", target: "ST_IWAZARU", weight: 1.0 },
-    EdgeDef { source: "IN_HANDS_PROX", target: "ST_IWAZARU", weight: 0.8 },
-
-    EdgeDef { source: "IN_SMILE", target: "FT_HAPPY", weight: 0.9 },
-    EdgeDef { source: "IN_MOUTH", target: "FT_SHOCK", weight: 0.6 },
-    EdgeDef { source: "IN_FACE_PROX", target: "FT_SHOCK", weight: 0.5 },
-    EdgeDef { source: "FT_HAPPY", target: "ST_SMILE", weight: 0.9 },
-    EdgeDef { source: "FT_SHOCK", target: "ST_SURPRISE", weight: 0.9 },
-
-    // Inhibition
-    EdgeDef { source: "FT_ACTIVE", target: "ST_IDLE", weight: -0.6 },
-    EdgeDef { source: "ST_ROCK", target: "ST_SCISSORS", weight: -0.8 },
-    EdgeDef { source: "ST_ROCK", target: "ST_PAPER", weight: -0.8 },
-    EdgeDef { source: "ST_SCISSORS", target: "ST_PAPER", weight: -0.8 },
-    EdgeDef { source: "ST_YES", target: "ST_NO", weight: -2.0 },
-    EdgeDef { source: "ST_NO", target: "ST_YES", weight: -2.0 },
-    EdgeDef { source: "ST_MIZARU", target: "ST_KIKAZARU", weight: -1.0 },
-    EdgeDef { source: "ST_MIZARU", target: "ST_IWAZARU", weight: -1.0 },
-    EdgeDef { source: "ST_KIKAZARU", target: "ST_IWAZARU", weight: -1.0 },
-    EdgeDef { source: "ST_GRASP", target: "ST_WASH", weight: -0.8 },
-    EdgeDef { source: "ST_WASH", target: "ST_GRASP", weight: -0.8 },
-    EdgeDef { source: "ST_DRAG", target: "ST_WASH", weight: -0.8 },
-];
-
-// --- Engine ---
-
-#[wasm_bindgen]
-pub struct ContextEngine {
-    nodes: HashMap<String, f32>,
-    node_types: HashMap<String, NodeType>,
-    // エッジの検索を高速化するため、TargetをキーにしたMapを持つ
-    edges_by_target: HashMap<String, Vec<(&'static str, f32)>>, 
-    
-    decay: f32,
-    stiffness: f32,
-}
-
-#[wasm_bindgen]
-impl ContextEngine {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        let mut nodes = HashMap::new();
-        let mut node_types = HashMap::new();
-        let mut edges_by_target: HashMap<String, Vec<(&str, f32)>> = HashMap::new();
-
-        for n in NODES {
-            nodes.insert(n.id.to_string(), 0.0);
-            node_types.insert(n.id.to_string(), n.node_type);
-        }
-
-        for e in EDGES {
-            edges_by_target
-                .entry(e.target.to_string())
-                .or_default()
-                .push((e.source, e.weight));
-        }
-
-        Self {
-            nodes,
-            node_types,
-            edges_by_target,
-            decay: 0.25,
-            stiffness: 0.6,
-        }
-    }
-
-    fn sigmoid(&self, x: f32) -> f32 {
-        1.0 / (1.0 + (-6.0 * (x - 0.5)).exp())
-    }
-
-    // JSオブジェクト { "IN_VEL": 0.5, ... } を受け取る
-    pub fn inject(&mut self, inputs: JsValue) {
-        let input_map: HashMap<String, f32> = serde_wasm_bindgen::from_value(inputs).unwrap_or_default();
-        
-        for (id, val) in input_map {
-            if let Some(current) = self.nodes.get_mut(&id) {
-                // V5 Logic: Slight blend
-                *current = (*current * 0.3) + (val * 0.7);
-            }
-        }
-    }
-
-    pub fn step(&mut self) {
-        let mut next_state = self.nodes.clone();
-
-        for (node_id, current_val) in &self.nodes {
-            let mut input_sum = 0.0;
-
-            // Gather energy from incoming edges
-            if let Some(incoming) = self.edges_by_target.get(node_id) {
-                for (source_id, weight) in incoming {
-                    if let Some(source_val) = self.nodes.get(*source_id) {
-                        input_sum += source_val * weight;
-                    }
-                }
-            }
-
-            let energy = input_sum * self.stiffness;
-            let retained = current_val * (1.0 - self.decay);
-            let node_type = self.node_types.get(node_id).unwrap();
-
-            match node_type {
-                NodeType::Sensor => {
-                    // Sensors just retain/decay (values are injected externally)
-                    next_state.insert(node_id.clone(), (retained).max(0.0));
-                },
-                _ => {
-                    let raw_activ = retained + energy;
-                    let new_val = if raw_activ > 0.1 {
-                        self.sigmoid(raw_activ)
-                    } else {
-                        raw_activ
-                    };
-                    // Clamp [0, 1]
-                    next_state.insert(node_id.clone(), new_val.max(0.0).min(1.0));
-                }
-            }
-        }
-
-        self.nodes = next_state;
-    }
-
-    pub fn get_activations(&self) -> JsValue {
-        serde_wasm_bindgen::to_value(&self.nodes).unwrap()
-    }
-
-    // Stateタイプのノードのみをソートして返す（上位のコンテキスト判定用）
-    #[derive(Serialize)]
-    struct RankedState {
-        id: String,
-        label: String, // Rust側ではLabelを持ってないのでIDで代用か、Map引くか。ここでは簡易化
-        value: f32,
-    }
-
-    pub fn get_ranked_states(&self) -> JsValue {
-        let mut states = Vec::new();
-        for (id, val) in &self.nodes {
-            if let Some(NodeType::State) = self.node_types.get(id) {
-                // Label検索（本来はHashMapにするべきだが、この規模ならリニアスキャンでも一瞬）
-                let label = NODES.iter().find(|n| n.id == id).map(|n| n.label).unwrap_or(id);
-                
-                states.push(serde_json::json!({
-                    "id": id,
-                    "label": label,
-                    "value": val
-                }));
-            }
-        }
-        
-        // Sort descending
-        states.sort_by(|a, b| {
-            let val_a = a["value"].as_f64().unwrap();
-            let val_b = b["value"].as_f64().unwrap();
-            val_b.partial_cmp(&val_a).unwrap()
-        });
-
-        serde_wasm_bindgen::to_value(&states).unwrap()
-    }
-}
 </file>
 
 <file path="www/index.html">
@@ -1010,145 +931,6 @@ const root = createRoot(document.getElementById('root'));
 root.render(<LogicGraphApp />);
 </file>
 
-<file path=".gitignore">
-# ========================
-# Rust / Cargo
-# ========================
-# ビルド生成物（巨大なので絶対にコミットしない）
-/target/
-
-# バックアップファイルなど
-**/*.rs.bk
-
-# Cargo.lock はライブラリ開発なら無視することもありますが、
-# 今回はアプリケーション/PoCとしての再現性を重視するためコミットします。
-# (無視したい場合は下の行の # を外してください)
-# Cargo.lock
-
-# ========================
-# Python
-# ========================
-# バイトコード
-__pycache__/
-*.py[cod]
-*$py.class
-
-# C拡張モジュール (MaturinでビルドされたRustライブラリ本体)
-*.so
-*.pyd
-*.dylib
-
-# 配布用ビルドアーティファクト
-dist/
-build/
-*.egg-info/
-
-# 仮想環境 (uv venv)
-.venv/
-venv/
-env/
-ENV/
-
-# テスト・型チェックキャッシュ
-.pytest_cache/
-.mypy_cache/
-
-# ========================
-# WebAssembly / Frontend
-# ========================
-# wasm-pack によって自動生成されるファイル群
-# (ソースコードからいつでも再生成できるためコミット不要)
-www/pkg/
-
-# npm を使うようになった場合の依存ライブラリ
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# ========================
-# OS / IDE / Editors
-# ========================
-# macOS
-.DS_Store
-
-# Windows
-Thumbs.db
-ehthumbs.db
-
-# VS Code
-.vscode/
-
-# IntelliJ / PyCharm
-.idea/
-
-# Vim / Emacs
-*~
-*.swp
-</file>
-
-<file path="Cargo.toml">
-[package]
-name = "context-graph-rs"
-version = "0.1.0"
-edition = "2026"
-authors = ["R&D Researcher <funmatu@gmail.com>"]
-description = "A dual-runtime computation core for WebAssembly and Python, powered by Rust."
-
-[lib]
-name = "context_graph_rs"
-crate-type = ["cdylib", "rlib"]
-
-[features]
-default = ["console_error_panic_hook"]
-wasm = ["dep:wasm-bindgen"]
-python = ["dep:pyo3"]
-
-[dependencies]
-# Common dependencies (Math, etc.)
-serde = { version = "1.0", features = ["derive"] }
-
-# Feature: WebAssembly
-wasm-bindgen = { version = "0.2", optional = true }
-
-# Feature: Python
-pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
-
-rayon = "1.10"
-serde-wasm-bindgen = "0.6"
-getrandom = { version = "0.2", features = ["js"] }
-console_error_panic_hook = { version = "0.1.6", optional = true }
-
-[profile.release]
-lto = true
-opt-level = 3
-codegen-units = 1
-</file>
-
-<file path="LICENSE">
-MIT License
-
-Copyright (c) 2025 Funmatu
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-</file>
-
 <file path="pyproject.toml">
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
@@ -1238,6 +1020,322 @@ let results = engine.get_ranked_states();
 * **Python Bindings**: Add `PyO3` support for direct integration with ROS2 nodes.
 
 ---
+</file>
+
+<file path="src/lib.rs">
+use std::collections::HashMap;
+use wasm_bindgen::prelude::*;
+use serde::Serialize;
+
+// --- Graph Definitions (Static Configuration) ---
+
+#[derive(Clone, Copy, PartialEq)]
+enum NodeType {
+    Sensor,
+    Feature,
+    State,
+}
+
+struct NodeDef {
+    id: &'static str,
+    #[allow(dead_code)]
+    label: &'static str,
+    node_type: NodeType,
+}
+
+struct EdgeDef {
+    source: &'static str,
+    target: &'static str,
+    weight: f32,
+}
+
+const NODES: &[NodeDef] = &[
+    // Sensors
+    NodeDef { id: "IN_VEL", label: "Velocity", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_REL_MOV", label: "Rel. Motion", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_FIST", label: "Fist", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_PINCH", label: "Pinch", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_OPEN", label: "Open Hand", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_SCISSORS", label: "Scissors Pose", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_HANDS_PROX", label: "Hands Touch", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_OCCLUSION", label: "Face Lost+Prox", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_THUMB_UP", label: "Thumb UP", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_THUMB_DOWN", label: "Thumb DOWN", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_EYES_ACT", label: "Cover Eyes", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_EARS_ACT", label: "Cover Ears", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_MOUTH_GUARD", label: "Cover Mouth", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_SMILE", label: "Smile", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_MOUTH", label: "Mouth Open", node_type: NodeType::Sensor },
+    NodeDef { id: "IN_FACE_PROX", label: "Hand-Face Prox", node_type: NodeType::Sensor },
+
+    // Features
+    NodeDef { id: "FT_ACTIVE", label: "High Kinetic", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HOLDING", label: "Holding", node_type: NodeType::Feature },
+    NodeDef { id: "FT_FRICTION", label: "Friction", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HIDING", label: "Concealment", node_type: NodeType::Feature },
+    NodeDef { id: "FT_RPS_ROCK", label: "Pose: ROCK", node_type: NodeType::Feature },
+    NodeDef { id: "FT_RPS_SCI", label: "Pose: SCISSORS", node_type: NodeType::Feature },
+    NodeDef { id: "FT_RPS_PAP", label: "Pose: PAPER", node_type: NodeType::Feature },
+    NodeDef { id: "FT_APPROVAL", label: "Semantics: YES", node_type: NodeType::Feature },
+    NodeDef { id: "FT_DISAPPROVAL", label: "Semantics: NO", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HIDDEN_SENSE", label: "Blocking Senses", node_type: NodeType::Feature },
+    NodeDef { id: "FT_HAPPY", label: "Emo: Happy", node_type: NodeType::Feature },
+    NodeDef { id: "FT_SHOCK", label: "Emo: Shock", node_type: NodeType::Feature },
+
+    // States
+    NodeDef { id: "ST_IDLE", label: "IDLE", node_type: NodeType::State },
+    NodeDef { id: "ST_GRASP", label: "ACTION: GRASP", node_type: NodeType::State },
+    NodeDef { id: "ST_DRAG", label: "ACTION: DRAG", node_type: NodeType::State },
+    NodeDef { id: "ST_WASH", label: "ACTION: WASH", node_type: NodeType::State },
+    NodeDef { id: "ST_PEEKABOO", label: "CTX: HIDDEN", node_type: NodeType::State },
+    NodeDef { id: "ST_ROCK", label: "GAME: ROCK", node_type: NodeType::State },
+    NodeDef { id: "ST_SCISSORS", label: "GAME: SCISSORS", node_type: NodeType::State },
+    NodeDef { id: "ST_PAPER", label: "GAME: PAPER", node_type: NodeType::State },
+    NodeDef { id: "ST_YES", label: "CTX: YES / OK", node_type: NodeType::State },
+    NodeDef { id: "ST_NO", label: "CTX: NO / BAD", node_type: NodeType::State },
+    NodeDef { id: "ST_MIZARU", label: "🙈 MIZARU", node_type: NodeType::State },
+    NodeDef { id: "ST_KIKAZARU", label: "🙉 KIKAZARU", node_type: NodeType::State },
+    NodeDef { id: "ST_IWAZARU", label: "🙊 IWAZARU", node_type: NodeType::State },
+    NodeDef { id: "ST_SMILE", label: "FACE: SMILE", node_type: NodeType::State },
+    NodeDef { id: "ST_SURPRISE", label: "FACE: SURPRISE", node_type: NodeType::State },
+];
+
+const EDGES: &[EdgeDef] = &[
+    // V5 Physical
+    EdgeDef { source: "IN_VEL", target: "FT_ACTIVE", weight: 0.9 },
+    EdgeDef { source: "IN_FIST", target: "FT_HOLDING", weight: 0.9 },
+    EdgeDef { source: "IN_PINCH", target: "FT_HOLDING", weight: 0.8 },
+    EdgeDef { source: "IN_HANDS_PROX", target: "FT_FRICTION", weight: 0.7 },
+    EdgeDef { source: "IN_REL_MOV", target: "FT_FRICTION", weight: 0.9 },
+    EdgeDef { source: "IN_OCCLUSION", target: "FT_HIDING", weight: 1.0 },
+    
+    EdgeDef { source: "FT_HOLDING", target: "ST_GRASP", weight: 1.0 },
+    EdgeDef { source: "FT_ACTIVE", target: "ST_GRASP", weight: -0.3 },
+    EdgeDef { source: "FT_HOLDING", target: "ST_DRAG", weight: 0.8 },
+    EdgeDef { source: "FT_ACTIVE", target: "ST_DRAG", weight: 0.9 },
+    EdgeDef { source: "FT_FRICTION", target: "ST_WASH", weight: 1.2 },
+    EdgeDef { source: "FT_HIDING", target: "ST_PEEKABOO", weight: 1.2 },
+
+    // V4 Semantic
+    EdgeDef { source: "IN_FIST", target: "FT_RPS_ROCK", weight: 0.8 },
+    EdgeDef { source: "IN_SCISSORS", target: "FT_RPS_SCI", weight: 0.9 },
+    EdgeDef { source: "IN_OPEN", target: "FT_RPS_PAP", weight: 0.9 },
+    EdgeDef { source: "FT_RPS_ROCK", target: "ST_ROCK", weight: 0.9 },
+    EdgeDef { source: "FT_RPS_SCI", target: "ST_SCISSORS", weight: 0.9 },
+    EdgeDef { source: "FT_RPS_PAP", target: "ST_PAPER", weight: 0.9 },
+
+    EdgeDef { source: "IN_THUMB_UP", target: "FT_APPROVAL", weight: 1.0 },
+    EdgeDef { source: "IN_THUMB_DOWN", target: "FT_DISAPPROVAL", weight: 1.0 },
+    EdgeDef { source: "IN_THUMB_UP", target: "FT_RPS_ROCK", weight: -0.5 },
+    EdgeDef { source: "IN_THUMB_DOWN", target: "FT_RPS_ROCK", weight: -0.5 },
+    EdgeDef { source: "FT_APPROVAL", target: "ST_YES", weight: 1.0 },
+    EdgeDef { source: "FT_DISAPPROVAL", target: "ST_NO", weight: 1.0 },
+
+    EdgeDef { source: "IN_EYES_ACT", target: "FT_HIDDEN_SENSE", weight: 0.8 },
+    EdgeDef { source: "IN_EYES_ACT", target: "ST_MIZARU", weight: 1.0 },
+    EdgeDef { source: "IN_HANDS_PROX", target: "ST_MIZARU", weight: 0.5 },
+    EdgeDef { source: "IN_EARS_ACT", target: "FT_HIDDEN_SENSE", weight: 0.8 },
+    EdgeDef { source: "IN_EARS_ACT", target: "ST_KIKAZARU", weight: 1.0 },
+    EdgeDef { source: "IN_MOUTH_GUARD", target: "FT_HIDDEN_SENSE", weight: 0.8 },
+    EdgeDef { source: "IN_MOUTH_GUARD", target: "ST_IWAZARU", weight: 1.0 },
+    EdgeDef { source: "IN_HANDS_PROX", target: "ST_IWAZARU", weight: 0.8 },
+
+    EdgeDef { source: "IN_SMILE", target: "FT_HAPPY", weight: 0.9 },
+    EdgeDef { source: "IN_MOUTH", target: "FT_SHOCK", weight: 0.6 },
+    EdgeDef { source: "IN_FACE_PROX", target: "FT_SHOCK", weight: 0.5 },
+    EdgeDef { source: "FT_HAPPY", target: "ST_SMILE", weight: 0.9 },
+    EdgeDef { source: "FT_SHOCK", target: "ST_SURPRISE", weight: 0.9 },
+
+    // Inhibition
+    EdgeDef { source: "FT_ACTIVE", target: "ST_IDLE", weight: -0.6 },
+    EdgeDef { source: "ST_ROCK", target: "ST_SCISSORS", weight: -0.8 },
+    EdgeDef { source: "ST_ROCK", target: "ST_PAPER", weight: -0.8 },
+    EdgeDef { source: "ST_SCISSORS", target: "ST_PAPER", weight: -0.8 },
+    EdgeDef { source: "ST_YES", target: "ST_NO", weight: -2.0 },
+    EdgeDef { source: "ST_NO", target: "ST_YES", weight: -2.0 },
+    EdgeDef { source: "ST_MIZARU", target: "ST_KIKAZARU", weight: -1.0 },
+    EdgeDef { source: "ST_MIZARU", target: "ST_IWAZARU", weight: -1.0 },
+    EdgeDef { source: "ST_KIKAZARU", target: "ST_IWAZARU", weight: -1.0 },
+    EdgeDef { source: "ST_GRASP", target: "ST_WASH", weight: -0.8 },
+    EdgeDef { source: "ST_WASH", target: "ST_GRASP", weight: -0.8 },
+    EdgeDef { source: "ST_DRAG", target: "ST_WASH", weight: -0.8 },
+];
+
+// --- Engine ---
+
+// Helper struct for sorting states (moved outside impl)
+#[derive(Serialize)]
+struct RankedState {
+    id: String,
+    label: String,
+    value: f32,
+}
+
+#[wasm_bindgen]
+pub struct ContextEngine {
+    nodes: HashMap<String, f32>,
+    node_types: HashMap<String, NodeType>,
+    // エッジの検索を高速化するため、TargetをキーにしたMapを持つ
+    edges_by_target: HashMap<String, Vec<(&'static str, f32)>>, 
+    
+    decay: f32,
+    stiffness: f32,
+}
+
+#[wasm_bindgen]
+impl ContextEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        #[cfg(feature = "console_error_panic_hook")]
+        console_error_panic_hook::set_once();
+
+        let mut nodes = HashMap::new();
+        let mut node_types = HashMap::new();
+        let mut edges_by_target: HashMap<String, Vec<(&str, f32)>> = HashMap::new();
+
+        for n in NODES {
+            nodes.insert(n.id.to_string(), 0.0);
+            node_types.insert(n.id.to_string(), n.node_type);
+        }
+
+        for e in EDGES {
+            edges_by_target
+                .entry(e.target.to_string())
+                .or_default()
+                .push((e.source, e.weight));
+        }
+
+        Self {
+            nodes,
+            node_types,
+            edges_by_target,
+            decay: 0.25,
+            stiffness: 0.6,
+        }
+    }
+
+    fn sigmoid(&self, x: f32) -> f32 {
+        1.0 / (1.0 + (-6.0 * (x - 0.5)).exp())
+    }
+
+    // JSオブジェクト { "IN_VEL": 0.5, ... } を受け取る
+    pub fn inject(&mut self, inputs: JsValue) {
+        let input_map: HashMap<String, f32> = serde_wasm_bindgen::from_value(inputs).unwrap_or_default();
+        
+        for (id, val) in input_map {
+            if let Some(current) = self.nodes.get_mut(&id) {
+                // V5 Logic: Slight blend
+                *current = (*current * 0.3) + (val * 0.7);
+            }
+        }
+    }
+
+    pub fn step(&mut self) {
+        let mut next_state = self.nodes.clone();
+
+        for (node_id, current_val) in &self.nodes {
+            let mut input_sum = 0.0;
+
+            // Gather energy from incoming edges
+            if let Some(incoming) = self.edges_by_target.get(node_id) {
+                for (source_id, weight) in incoming {
+                    if let Some(source_val) = self.nodes.get(*source_id) {
+                        input_sum += source_val * weight;
+                    }
+                }
+            }
+
+            let energy = input_sum * self.stiffness;
+            let retained = current_val * (1.0 - self.decay);
+            let node_type = self.node_types.get(node_id).unwrap();
+
+            match node_type {
+                NodeType::Sensor => {
+                    // Sensors just retain/decay (values are injected externally)
+                    next_state.insert(node_id.clone(), (retained).max(0.0));
+                },
+                _ => {
+                    let raw_activ = retained + energy;
+                    let new_val = if raw_activ > 0.1 {
+                        self.sigmoid(raw_activ)
+                    } else {
+                        raw_activ
+                    };
+                    // Clamp [0, 1]
+                    next_state.insert(node_id.clone(), new_val.max(0.0).min(1.0));
+                }
+            }
+        }
+
+        self.nodes = next_state;
+    }
+
+    pub fn get_activations(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.nodes).unwrap()
+    }
+
+    // Stateタイプのノードのみをソートして返す（上位のコンテキスト判定用）
+    pub fn get_ranked_states(&self) -> JsValue {
+        let mut states = Vec::new();
+        for (id, val) in &self.nodes {
+            if let Some(NodeType::State) = self.node_types.get(id) {
+                // Label検索
+                let label = NODES.iter().find(|n| n.id == id).map(|n| n.label).unwrap_or(id);
+                
+                states.push(RankedState {
+                    id: id.clone(),
+                    label: label.to_string(),
+                    value: *val,
+                });
+            }
+        }
+        
+        // Sort descending
+        states.sort_by(|a, b| {
+            b.value.partial_cmp(&a.value).unwrap()
+        });
+
+        serde_wasm_bindgen::to_value(&states).unwrap()
+    }
+}
+</file>
+
+<file path="Cargo.toml">
+[package]
+name = "context-graph-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["R&D Researcher <funmatu@gmail.com>"]
+description = "A dual-runtime computation core for WebAssembly and Python, powered by Rust."
+
+[lib]
+name = "context_graph_rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+wasm = ["dep:wasm-bindgen"]
+python = ["dep:pyo3"]
+
+[dependencies]
+# Common dependencies (Math, etc.)
+serde = { version = "1.0", features = ["derive"] }
+
+# Feature: WebAssembly
+wasm-bindgen = { version = "0.2", optional = true }
+
+# Feature: Python
+pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
+
+rayon = "1.10"
+serde-wasm-bindgen = "0.6"
+getrandom = { version = "0.2", features = ["js"] }
+console_error_panic_hook = { version = "0.1.6", optional = true }
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
 </file>
 
 </files>
