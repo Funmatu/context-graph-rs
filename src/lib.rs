@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
-use serde::{Serialize, Deserialize};
+use serde::Serialize;
 
 // --- Graph Definitions (Static Configuration) ---
-// 将来的にはJSON読み込み等で動的にできるが、まずはV6の定義をハードコードして再現性を担保する
 
 #[derive(Clone, Copy, PartialEq)]
 enum NodeType {
@@ -14,7 +13,7 @@ enum NodeType {
 
 struct NodeDef {
     id: &'static str,
-    #[allow(dead_code)] // 将来的に使う
+    #[allow(dead_code)]
     label: &'static str,
     node_type: NodeType,
 }
@@ -139,6 +138,14 @@ const EDGES: &[EdgeDef] = &[
 
 // --- Engine ---
 
+// Helper struct for sorting states (moved outside impl)
+#[derive(Serialize)]
+struct RankedState {
+    id: String,
+    label: String,
+    value: f32,
+}
+
 #[wasm_bindgen]
 pub struct ContextEngine {
     nodes: HashMap<String, f32>,
@@ -154,6 +161,9 @@ pub struct ContextEngine {
 impl ContextEngine {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        #[cfg(feature = "console_error_panic_hook")]
+        console_error_panic_hook::set_once();
+
         let mut nodes = HashMap::new();
         let mut node_types = HashMap::new();
         let mut edges_by_target: HashMap<String, Vec<(&str, f32)>> = HashMap::new();
@@ -240,33 +250,24 @@ impl ContextEngine {
     }
 
     // Stateタイプのノードのみをソートして返す（上位のコンテキスト判定用）
-    #[derive(Serialize)]
-    struct RankedState {
-        id: String,
-        label: String, // Rust側ではLabelを持ってないのでIDで代用か、Map引くか。ここでは簡易化
-        value: f32,
-    }
-
     pub fn get_ranked_states(&self) -> JsValue {
         let mut states = Vec::new();
         for (id, val) in &self.nodes {
             if let Some(NodeType::State) = self.node_types.get(id) {
-                // Label検索（本来はHashMapにするべきだが、この規模ならリニアスキャンでも一瞬）
+                // Label検索
                 let label = NODES.iter().find(|n| n.id == id).map(|n| n.label).unwrap_or(id);
                 
-                states.push(serde_json::json!({
-                    "id": id,
-                    "label": label,
-                    "value": val
-                }));
+                states.push(RankedState {
+                    id: id.clone(),
+                    label: label.to_string(),
+                    value: *val,
+                });
             }
         }
         
         // Sort descending
         states.sort_by(|a, b| {
-            let val_a = a["value"].as_f64().unwrap();
-            let val_b = b["value"].as_f64().unwrap();
-            val_b.partial_cmp(&val_a).unwrap()
+            b.value.partial_cmp(&a.value).unwrap()
         });
 
         serde_wasm_bindgen::to_value(&states).unwrap()
