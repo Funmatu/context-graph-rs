@@ -1,5 +1,6 @@
 # ContextGraph-RS: Spreading Activation Engine in Rust
 
+![Build Status](https://github.com/Funmatu/context-graph-rs/actions/workflows/deploy.yml/badge.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Rust](https://img.shields.io/badge/core-Rust-orange)
 ![WASM](https://img.shields.io/badge/target-WASM-blue)
