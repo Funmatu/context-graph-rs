@@ -1,0 +1,19 @@
+{
+  "name": "context-graph-rs",
+  "type": "module",
+  "collaborators": [
+    "R&D Researcher <funmatu@gmail.com>"
+  ],
+  "description": "A dual-runtime computation core for WebAssembly and Python, powered by Rust.",
+  "version": "0.1.0",
+  "files": [
+    "context_graph_rs_bg.wasm",
+    "context_graph_rs.js",
+    "context_graph_rs.d.ts"
+  ],
+  "main": "context_graph_rs.js",
+  "types": "context_graph_rs.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
