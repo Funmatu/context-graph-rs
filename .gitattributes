@@ -1,3 +1,3 @@
-# デモ用やビルド生成物を「外部コード」扱いにして統計から消す
-www/* linguist-vendored
 pkg/* linguist-vendored
+www/dist/* linguist-vendored
+www/node_modules/* linguist-vendored
